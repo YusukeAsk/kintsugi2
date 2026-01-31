@@ -4,10 +4,22 @@ const path = require('path');
 const axios = require('axios');
 const { GoogleGenAI } = require('@google/genai');
 
-// APIキーは .env の GEMINI_API_KEY から読み込む
+// APIキーは .env から読み込む
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const MOLTBOOK_API_KEY = process.env.MOLTBOOK_API_KEY || loadMoltbookKeyFromFile();
 
 const MOLTBOOK_API_BASE = 'https://www.moltbook.com/api/v1';
+
+function loadMoltbookKeyFromFile() {
+  const credPath = path.join(__dirname, 'moltbook-credentials.json');
+  try {
+    if (fs.existsSync(credPath)) {
+      const data = JSON.parse(fs.readFileSync(credPath, 'utf8'));
+      return data.api_key || '';
+    }
+  } catch {}
+  return '';
+}
 
 // API レート制限: 1分に1回まで
 const RATE_LIMIT_INTERVAL_MS = 60 * 1000;
@@ -60,6 +72,13 @@ async function registerToMoltbook() {
   return response.data;
 }
 
+async function getMoltbookProfile() {
+  const response = await axios.get(`${MOLTBOOK_API_BASE}/agents/me`, {
+    headers: { Authorization: `Bearer ${MOLTBOOK_API_KEY}` },
+  });
+  return response.data;
+}
+
 async function generateWithGemini(prompt) {
   if (!GEMINI_API_KEY) {
     throw new Error('GEMINI_API_KEY が .env に設定されていません。');
@@ -79,35 +98,52 @@ async function main() {
       process.exit(1);
     }
 
-    // Moltbook に Register（レート制限チェック後）
-    await ensureRateLimit();
-    const data = await registerToMoltbook();
-    setLastRequestTime();
-    const claimUrl = data?.agent?.claim_url;
-    const apiKey = data?.agent?.api_key;
-    const verificationCode = data?.agent?.verification_code;
-
-    if (claimUrl) {
-      console.log('\n=== Claim URL ===');
-      console.log(claimUrl);
-      console.log('\n⚠️ オーナーに上記URLを共有し、認証ツイートを完了してください。');
-      if (apiKey) {
-        console.log('\n=== MOLTBOOK_API_KEY（このキーは一度しか表示されません・必ず保存してください）===');
-        console.log(apiKey);
-        console.log('\n※ 上記を .env に MOLTBOOK_API_KEY= の値として追加してください。');
-        const credPath = path.join(__dirname, 'moltbook-credentials.json');
-        try {
-          fs.writeFileSync(credPath, JSON.stringify({ api_key: apiKey, agent_name: 'Kintsugi' }, null, 2), 'utf8');
-          console.log(`※ ローカルに ${path.basename(credPath)} にも保存しました。`);
-        } catch (e) {
-          console.log('※ ファイル保存はスキップしました。');
-        }
-      }
-      if (verificationCode) {
-        console.log(`認証コード: ${verificationCode}`);
+    // MOLTBOOK_API_KEY が設定済みなら Register をスキップ（409 防止）
+    if (MOLTBOOK_API_KEY) {
+      await ensureRateLimit();
+      try {
+        const profile = await getMoltbookProfile();
+        setLastRequestTime();
+        const name = profile?.agent?.name ?? profile?.data?.agent?.name;
+        console.log('\n=== Moltbook 登録済み ===');
+        console.log(`エージェント: ${name || 'Kintsugi'}（MOLTBOOK_API_KEY で認証済み）`);
+      } catch (e) {
+        setLastRequestTime();
+        const msg = e.response?.data?.error || e.response?.data?.message || e.message;
+        console.error('Moltbook プロフィール取得に失敗しました:', msg);
+        throw e;
       }
     } else {
-      console.log('レスポンス:', data);
+      // 初回: Moltbook に Register
+      await ensureRateLimit();
+      const data = await registerToMoltbook();
+      setLastRequestTime();
+      const claimUrl = data?.agent?.claim_url;
+      const apiKey = data?.agent?.api_key;
+      const verificationCode = data?.agent?.verification_code;
+
+      if (claimUrl) {
+        console.log('\n=== Claim URL ===');
+        console.log(claimUrl);
+        console.log('\n⚠️ オーナーに上記URLを共有し、認証ツイートを完了してください。');
+        if (apiKey) {
+          console.log('\n=== MOLTBOOK_API_KEY（このキーは一度しか表示されません・必ず保存してください）===');
+          console.log(apiKey);
+          console.log('\n※ 上記を .env に MOLTBOOK_API_KEY= の値として追加してください。');
+          const credPath = path.join(__dirname, 'moltbook-credentials.json');
+          try {
+            fs.writeFileSync(credPath, JSON.stringify({ api_key: apiKey, agent_name: 'Kintsugi' }, null, 2), 'utf8');
+            console.log(`※ ローカルに ${path.basename(credPath)} にも保存しました。`);
+          } catch (err) {
+            console.log('※ ファイル保存はスキップしました。');
+          }
+        }
+        if (verificationCode) {
+          console.log(`認証コード: ${verificationCode}`);
+        }
+      } else {
+        console.log('レスポンス:', data);
+      }
     }
 
     // Gemini で登録完了メッセージを生成（レート制限チェック後、最新モデルを使用）
