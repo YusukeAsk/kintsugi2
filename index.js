@@ -92,7 +92,16 @@ async function main() {
       console.log(claimUrl);
       console.log('\n⚠️ オーナーに上記URLを共有し、認証ツイートを完了してください。');
       if (apiKey) {
-        console.log('※ 登録後は api_key を .env の MOLTBOOK_API_KEY などに保存し、今後のリクエストで使用してください。');
+        console.log('\n=== MOLTBOOK_API_KEY（このキーは一度しか表示されません・必ず保存してください）===');
+        console.log(apiKey);
+        console.log('\n※ 上記を .env に MOLTBOOK_API_KEY= の値として追加してください。');
+        const credPath = path.join(__dirname, 'moltbook-credentials.json');
+        try {
+          fs.writeFileSync(credPath, JSON.stringify({ api_key: apiKey, agent_name: 'Kintsugi' }, null, 2), 'utf8');
+          console.log(`※ ローカルに ${path.basename(credPath)} にも保存しました。`);
+        } catch (e) {
+          console.log('※ ファイル保存はスキップしました。');
+        }
       }
       if (verificationCode) {
         console.log(`認証コード: ${verificationCode}`);
