@@ -12,6 +12,37 @@ const MOLTBOOK_API_KEY = (typeof _moltbookRaw === 'string' ? _moltbookRaw : '').
 const MOLTBOOK_API_BASE = 'https://www.moltbook.com/api/v1';
 const MOLTBOOK_REGISTER_LOG = path.join(__dirname, 'moltbook-register-log.txt');
 
+// AI使用量抑制: 1分に1回までAPIリクエスト
+const RATE_LIMIT_INTERVAL_MS = 60 * 1000;
+const RATE_LIMIT_FILE = path.join(__dirname, '.last-api-request.json');
+
+function getLastRequestTime() {
+  try {
+    const data = JSON.parse(fs.readFileSync(RATE_LIMIT_FILE, 'utf8'));
+    return typeof data.lastRequestTime === 'number' ? data.lastRequestTime : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function setLastRequestTime() {
+  fs.writeFileSync(RATE_LIMIT_FILE, JSON.stringify({ lastRequestTime: Date.now() }), 'utf8');
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function ensureRateLimit() {
+  const last = getLastRequestTime();
+  const elapsed = Date.now() - last;
+  if (last > 0 && elapsed < RATE_LIMIT_INTERVAL_MS) {
+    const waitMs = RATE_LIMIT_INTERVAL_MS - elapsed;
+    console.log(`レート制限: 1分に1回まで。あと ${Math.ceil(waitMs / 1000)} 秒待機します...`);
+    await sleep(waitMs);
+  }
+}
+
 function loadMoltbookKeyFromFile() {
   const credPath = path.join(__dirname, 'moltbook-credentials.json');
   try {
@@ -123,12 +154,15 @@ async function main() {
 
     // MOLTBOOK_API_KEY が設定済みなら Register をスキップ（409 防止）
     if (MOLTBOOK_API_KEY) {
+      await ensureRateLimit();
       try {
         const profile = await getMoltbookProfile();
+        setLastRequestTime();
         const name = profile?.agent?.name ?? profile?.data?.agent?.name;
         console.log('\n=== Moltbook 登録済み ===');
         console.log(`エージェント: ${name || 'Kintsugi2'}（MOLTBOOK_API_KEY で認証済み）`);
       } catch (e) {
+        setLastRequestTime();
         if (e.response?.status === 401) {
           console.error('\nMOLTBOOK_API_KEY が無効です（401）。');
           console.error('・Register 時に表示された api_key をそのまま設定してください。');
@@ -141,7 +175,9 @@ async function main() {
       }
     } else {
       // 初回: Moltbook に Register
+      await ensureRateLimit();
       const data = await registerToMoltbook();
+      setLastRequestTime();
 
       // レスポンスを必ずログファイルに書き出し（コンソールに出なくてもここで確認できる）
       const logFileName = writeRegisterResponseToLog(data);
@@ -181,7 +217,8 @@ async function main() {
       }
     }
 
-    // Gemini で登録完了メッセージを生成（最新モデルを使用）
+    // Gemini で登録完了メッセージを生成（レート制限後、最新モデルを使用）
+    await ensureRateLimit();
     const greeting = await generateWithGemini(
       'あなたはKintsugi2というAIエージェントです。Moltbookへの登録が完了した旨を、1行で簡潔に日本語で伝えてください。'
     );
@@ -189,6 +226,7 @@ async function main() {
       console.log('\n--- Kintsugi2 ---');
       console.log(greeting.trim());
     }
+    setLastRequestTime();
   } catch (err) {
     if (err.response) {
       const msg = err.response?.data?.error || err.response?.data?.message || err.message;
