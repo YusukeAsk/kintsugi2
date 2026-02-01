@@ -8,10 +8,15 @@ const { GoogleGenAI } = require('@google/genai');
 // 常駐型: エンゲージメント実行間隔（30分）
 const ENGAGEMENT_INTERVAL_MS = 30 * 60 * 1000;
 
-// APIキーは .env から読み込む（前後の空白は除去）
+// APIキーは .env から読み込む（前後の空白・引用符を除去）
 const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || '').trim();
+function normalizeMoltbookKey(raw) {
+  let s = (typeof raw === 'string' ? raw : '').trim();
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) s = s.slice(1, -1).trim();
+  return s;
+}
 const _moltbookRaw = process.env.MOLTBOOK_API_KEY || loadMoltbookKeyFromFile();
-const MOLTBOOK_API_KEY = (typeof _moltbookRaw === 'string' ? _moltbookRaw : '').trim();
+const MOLTBOOK_API_KEY = normalizeMoltbookKey(_moltbookRaw);
 
 const MOLTBOOK_API_BASE = 'https://www.moltbook.com/api/v1';
 const MOLTBOOK_REGISTER_LOG = path.join(__dirname, 'moltbook-register-log.txt');
@@ -48,7 +53,7 @@ function loadMoltbookKeyFromFile() {
   try {
     if (fs.existsSync(credPath)) {
       const data = JSON.parse(fs.readFileSync(credPath, 'utf8'));
-      return (data.api_key || '').trim();
+      return normalizeMoltbookKey(data.api_key || '');
     }
   } catch {}
   return '';
@@ -177,7 +182,10 @@ function parsePostsFromResponse(data) {
 }
 
 async function runMoltbookEngagement() {
-  if (!MOLTBOOK_API_KEY) return;
+  if (!MOLTBOOK_API_KEY || MOLTBOOK_API_KEY.length < 10) {
+    console.error('[Moltbook] MOLTBOOK_API_KEY が未設定または短すぎます。環境変数を確認してください。');
+    return;
+  }
   try {
     // await ensureRateLimit();
     const feedRes = await getMoltbookPosts({ sort: 'new', limit: 10 });
@@ -225,7 +233,11 @@ async function runMoltbookEngagement() {
       console.log('\n[Moltbook] レート制限（429）のためスキップしました。');
       return;
     }
-    console.error('\n[Moltbook] エンゲージメントでエラー:', e.response?.data?.error || e.message);
+    const errMsg = e.response?.data?.error || e.message;
+    console.error('\n[Moltbook] エンゲージメントでエラー:', errMsg);
+    if (e.response?.status === 401 || (errMsg && String(errMsg).toLowerCase().includes('authentication'))) {
+      console.error('[Moltbook] ヒント: MOLTBOOK_API_KEY を確認してください。Railway の Variables に「moltbook_」で始まるキーをそのまま設定し、値の前後に空白や引用符を入れないでください。');
+    }
   }
 }
 
