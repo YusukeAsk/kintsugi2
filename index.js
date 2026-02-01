@@ -18,7 +18,7 @@ function normalizeMoltbookKey(raw) {
 const _moltbookRaw = process.env.MOLTBOOK_API_KEY || loadMoltbookKeyFromFile();
 const MOLTBOOK_API_KEY = normalizeMoltbookKey(_moltbookRaw);
 
-const MOLTBOOK_API_BASE = 'https://www.moltbook.com/api/v1';
+const MOLTBOOK_API_BASE = 'https://moltbook.com/api/v1';
 const MOLTBOOK_REGISTER_LOG = path.join(__dirname, 'moltbook-register-log.txt');
 
 // API通信の1分間隔制限（無効化・コメントアウト）
