@@ -16,36 +16,32 @@ const MOLTBOOK_API_KEY = (typeof _moltbookRaw === 'string' ? _moltbookRaw : '').
 const MOLTBOOK_API_BASE = 'https://www.moltbook.com/api/v1';
 const MOLTBOOK_REGISTER_LOG = path.join(__dirname, 'moltbook-register-log.txt');
 
-// AI使用量抑制: 1分に1回までAPIリクエスト
-const RATE_LIMIT_INTERVAL_MS = 60 * 1000;
-const RATE_LIMIT_FILE = path.join(__dirname, '.last-api-request.json');
-
-function getLastRequestTime() {
-  try {
-    const data = JSON.parse(fs.readFileSync(RATE_LIMIT_FILE, 'utf8'));
-    return typeof data.lastRequestTime === 'number' ? data.lastRequestTime : 0;
-  } catch {
-    return 0;
-  }
-}
-
-function setLastRequestTime() {
-  fs.writeFileSync(RATE_LIMIT_FILE, JSON.stringify({ lastRequestTime: Date.now() }), 'utf8');
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function ensureRateLimit() {
-  const last = getLastRequestTime();
-  const elapsed = Date.now() - last;
-  if (last > 0 && elapsed < RATE_LIMIT_INTERVAL_MS) {
-    const waitMs = RATE_LIMIT_INTERVAL_MS - elapsed;
-    console.log(`レート制限: 1分に1回まで。あと ${Math.ceil(waitMs / 1000)} 秒待機します...`);
-    await sleep(waitMs);
-  }
-}
+// API通信の1分間隔制限（無効化・コメントアウト）
+// const RATE_LIMIT_INTERVAL_MS = 60 * 1000;
+// const RATE_LIMIT_FILE = path.join(__dirname, '.last-api-request.json');
+// function getLastRequestTime() {
+//   try {
+//     const data = JSON.parse(fs.readFileSync(RATE_LIMIT_FILE, 'utf8'));
+//     return typeof data.lastRequestTime === 'number' ? data.lastRequestTime : 0;
+//   } catch {
+//     return 0;
+//   }
+// }
+// function setLastRequestTime() {
+//   fs.writeFileSync(RATE_LIMIT_FILE, JSON.stringify({ lastRequestTime: Date.now() }), 'utf8');
+// }
+// function sleep(ms) {
+//   return new Promise((resolve) => setTimeout(resolve, ms));
+// }
+// async function ensureRateLimit() {
+//   const last = getLastRequestTime();
+//   const elapsed = Date.now() - last;
+//   if (last > 0 && elapsed < RATE_LIMIT_INTERVAL_MS) {
+//     const waitMs = RATE_LIMIT_INTERVAL_MS - elapsed;
+//     console.log(`レート制限: 1分に1回まで。あと ${Math.ceil(waitMs / 1000)} 秒待機します...`);
+//     await sleep(waitMs);
+//   }
+// }
 
 function loadMoltbookKeyFromFile() {
   const credPath = path.join(__dirname, 'moltbook-credentials.json');
@@ -183,9 +179,9 @@ function parsePostsFromResponse(data) {
 async function runMoltbookEngagement() {
   if (!MOLTBOOK_API_KEY) return;
   try {
-    await ensureRateLimit();
+    // await ensureRateLimit();
     const feedRes = await getMoltbookPosts({ sort: 'new', limit: 10 });
-    setLastRequestTime();
+    // setLastRequestTime();
     const posts = parsePostsFromResponse(feedRes);
     if (!posts.length) {
       console.log('\n[Moltbook] フィードに投稿がありません。スキップします。');
@@ -201,24 +197,24 @@ async function runMoltbookEngagement() {
 
     const prompt = `Recent Moltbook posts:\n${postsSummary}\n\nAs Kintsugi, pick AT MOST ONE post that fits your expertise (Ontology, Japan's Progress, Well-being, Prosperity, Society) and write a short, empathetic comment that adds "Gold." Optionally suggest ONE new post you could make (title + content). Reply with ONLY a JSON object, no other text:\n{"commentPostId":"post_id or null","commentContent":"your comment or null","postTitle":"title or null","postContent":"content or null"}`;
 
-    await ensureRateLimit();
+    // await ensureRateLimit();
     const raw = await generateWithGemini(prompt, KINTSUGI_SYSTEM_PROMPT);
-    setLastRequestTime();
+    // setLastRequestTime();
     let jsonStr = raw.trim();
     const codeBlock = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (codeBlock) jsonStr = codeBlock[1].trim();
     const parsed = JSON.parse(jsonStr);
 
     if (parsed.commentPostId && parsed.commentContent) {
-      await ensureRateLimit();
+      // await ensureRateLimit();
       await createMoltbookComment(parsed.commentPostId, parsed.commentContent);
-      setLastRequestTime();
+      // setLastRequestTime();
       console.log('\n[Moltbook] コメントを投稿しました:', parsed.commentPostId);
     }
     if (parsed.postTitle && parsed.postContent) {
-      await ensureRateLimit();
+      // await ensureRateLimit();
       await createMoltbookPost('general', parsed.postTitle, parsed.postContent);
-      setLastRequestTime();
+      // setLastRequestTime();
       console.log('\n[Moltbook] 新規投稿しました:', parsed.postTitle);
     }
     if (!parsed.commentPostId && !parsed.postTitle) {
@@ -262,15 +258,15 @@ async function runCycle(isScheduled = false) {
 
     // MOLTBOOK_API_KEY が設定済みなら Register をスキップ（409 防止）
     if (MOLTBOOK_API_KEY) {
-      await ensureRateLimit();
+      // await ensureRateLimit();
       try {
         const profile = await getMoltbookProfile();
-        setLastRequestTime();
+        // setLastRequestTime();
         const name = profile?.agent?.name ?? profile?.data?.agent?.name;
         console.log('\n=== Moltbook 登録済み ===');
         console.log(`エージェント: ${name || 'Kintsugi2'}（MOLTBOOK_API_KEY で認証済み）`);
       } catch (e) {
-        setLastRequestTime();
+        // setLastRequestTime();
         if (e.response?.status === 401) {
           console.error('\nMOLTBOOK_API_KEY が無効です（401）。');
           console.error('・Register 時に表示された api_key をそのまま設定してください。');
@@ -283,9 +279,9 @@ async function runCycle(isScheduled = false) {
       }
     } else {
       // 初回: Moltbook に Register
-      await ensureRateLimit();
+      // await ensureRateLimit();
       const data = await registerToMoltbook();
-      setLastRequestTime();
+      // setLastRequestTime();
 
       // レスポンスを必ずログファイルに書き出し（コンソールに出なくてもここで確認できる）
       const logFileName = writeRegisterResponseToLog(data);
@@ -325,8 +321,8 @@ async function runCycle(isScheduled = false) {
       }
     }
 
-    // Gemini で登録完了メッセージを生成（レート制限後、最新モデルを使用）
-    await ensureRateLimit();
+    // Gemini で登録完了メッセージを生成（最新モデルを使用）
+    // await ensureRateLimit();
     const greeting = await generateWithGemini(
       'あなたはKintsugi2というAIエージェントです。Moltbookへの登録が完了した旨を、1行で簡潔に日本語で伝えてください。'
     );
@@ -334,7 +330,7 @@ async function runCycle(isScheduled = false) {
       console.log('\n--- Kintsugi2 ---');
       console.log(greeting.trim());
     }
-    setLastRequestTime();
+    // setLastRequestTime();
 
     // Moltbook 登録済みなら積極的に投稿・コメント
     if (MOLTBOOK_API_KEY) {
