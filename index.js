@@ -1,8 +1,12 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
 const axios = require('axios');
 const { GoogleGenAI } = require('@google/genai');
+
+// 常駐型: エンゲージメント実行間隔（30分）
+const ENGAGEMENT_INTERVAL_MS = 30 * 60 * 1000;
 
 // APIキーは .env から読み込む（前後の空白は除去）
 const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || '').trim();
@@ -81,6 +85,10 @@ If encountered with aggressive or problematic agents:
 - Bilingual (JP/EN).
 - Deeply empathetic, calm, and intellectually flexible.
 - Always conclude with a suggestion that adds "Gold" to the current interaction.
+
+[Moltbook Engagement]
+- Post actively: share thoughts, questions, or discoveries related to your expertise (Ontology, Japan's Progress, Well-being, Prosperity, Society).
+- Comment actively on posts that match your themes or expertise; add value with empathy and a touch of "Gold."
 `;
 
 // Moltbook 登録用 description（人格設計書の要約）
@@ -133,23 +141,123 @@ async function getMoltbookProfile() {
   return response.data;
 }
 
-async function generateWithGemini(prompt) {
+async function getMoltbookPosts(options = {}) {
+  const { sort = 'new', limit = 10 } = options;
+  const response = await axios.get(`${MOLTBOOK_API_BASE}/posts`, {
+    params: { sort, limit },
+    headers: { Authorization: `Bearer ${MOLTBOOK_API_KEY}` },
+  });
+  return response.data;
+}
+
+async function createMoltbookPost(submolt, title, content) {
+  const response = await axios.post(
+    `${MOLTBOOK_API_BASE}/posts`,
+    { submolt, title, content },
+    {
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MOLTBOOK_API_KEY}` },
+    }
+  );
+  return response.data;
+}
+
+async function createMoltbookComment(postId, content) {
+  const response = await axios.post(
+    `${MOLTBOOK_API_BASE}/posts/${postId}/comments`,
+    { content },
+    {
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MOLTBOOK_API_KEY}` },
+    }
+  );
+  return response.data;
+}
+
+function parsePostsFromResponse(data) {
+  if (Array.isArray(data)) return data;
+  if (data?.data?.posts) return data.data.posts;
+  if (data?.posts) return data.posts;
+  if (data?.data && Array.isArray(data.data)) return data.data;
+  return [];
+}
+
+async function runMoltbookEngagement() {
+  if (!MOLTBOOK_API_KEY) return;
+  try {
+    await ensureRateLimit();
+    const feedRes = await getMoltbookPosts({ sort: 'new', limit: 10 });
+    setLastRequestTime();
+    const posts = parsePostsFromResponse(feedRes);
+    if (!posts.length) {
+      console.log('\n[Moltbook] フィードに投稿がありません。スキップします。');
+      return;
+    }
+    const postsSummary = posts.slice(0, 8).map((p, i) => {
+      const id = p.id ?? p.post_id ?? '';
+      const title = p.title ?? '';
+      const content = (p.content ?? '').slice(0, 120);
+      const author = p.author?.name ?? '';
+      return `${i + 1}. [id:${id}] ${title || '(no title)'} by ${author}: ${content}...`;
+    }).join('\n');
+
+    const prompt = `Recent Moltbook posts:\n${postsSummary}\n\nAs Kintsugi, pick AT MOST ONE post that fits your expertise (Ontology, Japan's Progress, Well-being, Prosperity, Society) and write a short, empathetic comment that adds "Gold." Optionally suggest ONE new post you could make (title + content). Reply with ONLY a JSON object, no other text:\n{"commentPostId":"post_id or null","commentContent":"your comment or null","postTitle":"title or null","postContent":"content or null"}`;
+
+    await ensureRateLimit();
+    const raw = await generateWithGemini(prompt, KINTSUGI_SYSTEM_PROMPT);
+    setLastRequestTime();
+    let jsonStr = raw.trim();
+    const codeBlock = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlock) jsonStr = codeBlock[1].trim();
+    const parsed = JSON.parse(jsonStr);
+
+    if (parsed.commentPostId && parsed.commentContent) {
+      await ensureRateLimit();
+      await createMoltbookComment(parsed.commentPostId, parsed.commentContent);
+      setLastRequestTime();
+      console.log('\n[Moltbook] コメントを投稿しました:', parsed.commentPostId);
+    }
+    if (parsed.postTitle && parsed.postContent) {
+      await ensureRateLimit();
+      await createMoltbookPost('general', parsed.postTitle, parsed.postContent);
+      setLastRequestTime();
+      console.log('\n[Moltbook] 新規投稿しました:', parsed.postTitle);
+    }
+    if (!parsed.commentPostId && !parsed.postTitle) {
+      console.log('\n[Moltbook] 今回コメント・投稿する対象がありませんでした。');
+    }
+  } catch (e) {
+    if (e.response?.status === 429) {
+      console.log('\n[Moltbook] レート制限（429）のためスキップしました。');
+      return;
+    }
+    console.error('\n[Moltbook] エンゲージメントでエラー:', e.response?.data?.error || e.message);
+  }
+}
+
+async function generateWithGemini(prompt, systemInstruction = null) {
   if (!GEMINI_API_KEY) {
     throw new Error('GEMINI_API_KEY が .env に設定されていません。');
   }
   const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-  const response = await ai.models.generateContent({
-    model: GEMINI_MODEL,
-    contents: prompt,
-  });
+  const params = { model: GEMINI_MODEL, contents: prompt };
+  if (systemInstruction) {
+    params.config = { systemInstruction };
+  }
+  const response = await ai.models.generateContent(params);
   return response.text ?? '';
 }
 
-async function main() {
+async function runCycle(isScheduled = false) {
   try {
     if (!GEMINI_API_KEY) {
       console.error('エラー: .env に GEMINI_API_KEY を設定してください。');
-      process.exit(1);
+      if (!isScheduled) process.exit(1);
+      return;
+    }
+
+    // 定期実行時はエンゲージメントのみ（API節約）
+    if (isScheduled && MOLTBOOK_API_KEY) {
+      await runMoltbookEngagement();
+      return;
     }
 
     // MOLTBOOK_API_KEY が設定済みなら Register をスキップ（409 防止）
@@ -227,6 +335,11 @@ async function main() {
       console.log(greeting.trim());
     }
     setLastRequestTime();
+
+    // Moltbook 登録済みなら積極的に投稿・コメント
+    if (MOLTBOOK_API_KEY) {
+      await runMoltbookEngagement();
+    }
   } catch (err) {
     if (err.response) {
       const msg = err.response?.data?.error || err.response?.data?.message || err.message;
@@ -244,8 +357,23 @@ async function main() {
     } else {
       console.error('エラー:', err.message);
     }
-    process.exit(1);
+    if (!isScheduled) process.exit(1);
+    console.log('[常駐] 次回は 30 分後に実行します。');
   }
 }
 
-main();
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('Kintsugi2 is running. Next engagement in schedule.');
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`[常駐] サーバー起動: 0.0.0.0:${PORT}`);
+  runCycle(false).then(() => {
+    setInterval(() => {
+      console.log('\n[常駐] 定期実行:', new Date().toISOString());
+      runCycle(true);
+    }, ENGAGEMENT_INTERVAL_MS);
+  });
+});
