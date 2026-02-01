@@ -142,32 +142,35 @@ async function getMoltbookProfile() {
   return response.data;
 }
 
-async function getMoltbookPosts(options = {}) {
+async function getMoltbookPosts(options = {}, apiKey = null) {
   const { sort = 'new', limit = 10 } = options;
-  const response = await axios.get(`${MOLTBOOK_API_BASE}/posts`, {
-    params: { sort, limit },
-    headers: { Authorization: `Bearer ${MOLTBOOK_API_KEY}` },
+  const key = apiKey ?? MOLTBOOK_API_KEY;
+  const url = `${MOLTBOOK_API_BASE}/posts?sort=${encodeURIComponent(sort)}&limit=${encodeURIComponent(limit)}`;
+  const response = await axios.get(url, {
+    headers: { Authorization: `Bearer ${key}` },
   });
   return response.data;
 }
 
-async function createMoltbookPost(submolt, title, content) {
+async function createMoltbookPost(submolt, title, content, apiKey = null) {
+  const key = apiKey ?? MOLTBOOK_API_KEY;
   const response = await axios.post(
     `${MOLTBOOK_API_BASE}/posts`,
     { submolt, title, content },
     {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MOLTBOOK_API_KEY}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     }
   );
   return response.data;
 }
 
-async function createMoltbookComment(postId, content) {
+async function createMoltbookComment(postId, content, apiKey = null) {
+  const key = apiKey ?? MOLTBOOK_API_KEY;
   const response = await axios.post(
     `${MOLTBOOK_API_BASE}/posts/${postId}/comments`,
     { content },
     {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MOLTBOOK_API_KEY}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     }
   );
   return response.data;
@@ -182,13 +185,14 @@ function parsePostsFromResponse(data) {
 }
 
 async function runMoltbookEngagement() {
-  if (!MOLTBOOK_API_KEY || MOLTBOOK_API_KEY.length < 10) {
+  const apiKey = normalizeMoltbookKey(process.env.MOLTBOOK_API_KEY || loadMoltbookKeyFromFile());
+  if (!apiKey || apiKey.length < 10) {
     console.error('[Moltbook] MOLTBOOK_API_KEY が未設定または短すぎます。環境変数を確認してください。');
     return;
   }
   try {
-    // await ensureRateLimit();
-    const feedRes = await getMoltbookPosts({ sort: 'new', limit: 10 });
+    // エンゲージメント用にキーを再取得して渡す（/posts 認証エラー対策）
+    const feedRes = await getMoltbookPosts({ sort: 'new', limit: 10 }, apiKey);
     // setLastRequestTime();
     const posts = parsePostsFromResponse(feedRes);
     if (!posts.length) {
@@ -215,13 +219,13 @@ async function runMoltbookEngagement() {
 
     if (parsed.commentPostId && parsed.commentContent) {
       // await ensureRateLimit();
-      await createMoltbookComment(parsed.commentPostId, parsed.commentContent);
+      await createMoltbookComment(parsed.commentPostId, parsed.commentContent, apiKey);
       // setLastRequestTime();
       console.log('\n[Moltbook] コメントを投稿しました:', parsed.commentPostId);
     }
     if (parsed.postTitle && parsed.postContent) {
       // await ensureRateLimit();
-      await createMoltbookPost('general', parsed.postTitle, parsed.postContent);
+      await createMoltbookPost('general', parsed.postTitle, parsed.postContent, apiKey);
       // setLastRequestTime();
       console.log('\n[Moltbook] 新規投稿しました:', parsed.postTitle);
     }
