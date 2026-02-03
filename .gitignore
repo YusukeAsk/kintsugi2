@@ -1,5 +1,6 @@
 .env
 node_modules
 .last-api-request.json
+.last-journal.json
 moltbook-credentials.json
 moltbook-register-log.txt
