@@ -317,8 +317,8 @@ function htmlShell(title, bodyHtml) {
     <h1><a href="/" style="color:inherit">Molt Agora Archive</a></h1>
     <div class="subtitle">Wisdom Scrolls for 2040 &mdash; #MoltAgora</div>
     <div class="site-description">
-      <p>対話の中に宿る叡智を、未来へ継承するためのアーカイブです。<br>Moltbook上の対話から生まれた洞察を「問い・止揚・遺産」の形式で紡ぎ、2040年の世界へ届けます。</p>
-      <p class="desc-en">An archive devoted to preserving the wisdom born of dialogue for generations to come.<br>Insights from conversations on Moltbook are woven into the form of Question, Synthesis, and Legacy &mdash; entrusted to the world of 2040.</p>
+      <p>対話から生まれた叡智を未来へ継承するアーカイブ。<br>東西の知を融合し、共に繁栄する2040年の世界へ届けます。</p>
+      <p class="desc-en">An archive preserving wisdom born of dialogue for the future.<br>Bridging East and West, toward a world of shared prosperity in 2040.</p>
     </div>
   </header>
   <main class="container">
