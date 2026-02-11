@@ -5,7 +5,7 @@ const http = require('http');
 const axios = require('axios');
 const { GoogleGenAI } = require('@google/genai');
 const { WISDOM_SCROLL_PROMPT, buildDialogueSummary, saveWisdomScroll, listWisdomScrolls } = require('./wisdom-scroll');
-const { buildSite, serveStatic } = require('./agora-site');
+const { buildSite, serveStatic, loadAllScrollEntries } = require('./agora-site');
 
 // 常駐型: エンゲージメント実行間隔（30分）
 const ENGAGEMENT_INTERVAL_MS = 30 * 60 * 1000;
@@ -422,9 +422,14 @@ async function runCycle(isScheduled = false) {
       return;
     }
 
-    // 定期実行時はエンゲージメントのみ（API節約）
+    // 定期実行時はエンゲージメント + サイトリビルド
     if (isScheduled && MOLTBOOK_API_KEY) {
       await runMoltbookEngagement();
+      try {
+        buildSite();
+      } catch (e) {
+        console.warn('[Molt Agora] 定期リビルドをスキップ:', e.message);
+      }
       return;
     }
 
@@ -549,6 +554,55 @@ const server = http.createServer(async (req, res) => {
     if (handled) return;
   }
 
+  // ヘルスチェック（Railway / 外部監視向け）
+  if (method === 'GET' && reqPath === '/health') {
+    const scrollCount = listWisdomScrolls().length;
+    const uptime = process.uptime();
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      agent: 'Kintsugi2',
+      uptime: Math.floor(uptime),
+      scrolls: scrollCount,
+      timestamp: new Date().toISOString(),
+    }));
+    return;
+  }
+
+  // ステータス確認（サイト情報を含む詳細）
+  if (method === 'GET' && reqPath === '/api/status') {
+    const scrolls = listWisdomScrolls();
+    const entries = loadAllScrollEntries();
+    const latestDate = entries.length > 0 ? entries[0].date : null;
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      agent: 'Kintsugi2',
+      version: 'v14.3',
+      moltAgora: {
+        scrollCount: scrolls.length,
+        latestScrollDate: latestDate,
+        siteBuilt: fs.existsSync(path.join(__dirname, 'public', 'index.html')),
+      },
+      uptime: Math.floor(process.uptime()),
+      engagementInterval: ENGAGEMENT_INTERVAL_MS / 1000 + 's',
+      timestamp: new Date().toISOString(),
+    }));
+    return;
+  }
+
+  // 手動サイトリビルド（POST /api/rebuild）
+  if (method === 'POST' && reqPath === '/api/rebuild') {
+    try {
+      const result = buildSite();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ success: true, pages: result.pages }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+    return;
+  }
+
   // Wisdom Scroll 一覧 API
   if (method === 'GET' && reqPath === '/api/scrolls') {
     const scrolls = listWisdomScrolls();
@@ -587,16 +641,36 @@ const server = http.createServer(async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`[常駐] サーバー起動: 0.0.0.0:${PORT}`);
+  const startTime = new Date().toISOString();
+  console.log('');
+  console.log('============================================');
+  console.log('  Kintsugi2 - Steward of Molt Agora v14.3');
+  console.log('============================================');
+  console.log(`  起動時刻: ${startTime}`);
+  console.log(`  ポート:   ${PORT}`);
+  console.log(`  間隔:     ${ENGAGEMENT_INTERVAL_MS / 60000} 分`);
+  console.log(`  Gemini:   ${GEMINI_API_KEY ? '設定済み' : '未設定'}`);
+  console.log(`  Moltbook: ${MOLTBOOK_API_KEY ? '設定済み' : '未設定'}`);
+  console.log('');
+  console.log('  エンドポイント:');
+  console.log('    GET  /          Molt Agora Archive');
+  console.log('    GET  /health    ヘルスチェック');
+  console.log('    GET  /api/status  ステータス詳細');
+  console.log('    GET  /api/scrolls スクロール一覧 (JSON)');
+  console.log('    POST /api/rebuild サイト手動リビルド');
+  console.log('============================================');
+  console.log('');
 
   // 起動時に Molt Agora Archive を初回ビルド
   try {
-    buildSite();
+    const result = buildSite();
+    console.log(`[Molt Agora] 初回ビルド完了: ${result.pages} ページ生成`);
   } catch (e) {
     console.warn('[Molt Agora] 初回サイトビルドをスキップ:', e.message);
   }
 
   runCycle(false).then(() => {
+    console.log(`\n[常駐] 定期実行スケジュール開始（${ENGAGEMENT_INTERVAL_MS / 60000}分間隔）`);
     setInterval(() => {
       console.log('\n[常駐] 定期実行:', new Date().toISOString());
       runCycle(true);
