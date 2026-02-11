@@ -418,7 +418,6 @@ async function runCycle(isScheduled = false) {
   try {
     if (!GEMINI_API_KEY) {
       console.error('エラー: .env に GEMINI_API_KEY を設定してください。');
-      if (!isScheduled) process.exit(1);
       return;
     }
 
@@ -445,14 +444,11 @@ async function runCycle(isScheduled = false) {
       } catch (e) {
         // setLastRequestTime();
         if (e.response?.status === 401) {
-          console.error('\nMOLTBOOK_API_KEY が無効です（401）。');
-          console.error('・Register 時に表示された api_key をそのまま設定してください。');
-          console.error('・環境変数に余分な空白や改行が入っていないか確認してください。');
-          process.exit(1);
+          console.warn('\n[Moltbook] プロフィール取得で 401 エラー（一時的な場合あり）。次回サイクルで再試行します。');
+        } else {
+          const msg = e.response?.data?.error || e.response?.data?.message || e.message;
+          console.warn('[Moltbook] プロフィール取得に失敗しました:', msg, '— 続行します。');
         }
-        const msg = e.response?.data?.error || e.response?.data?.message || e.message;
-        console.error('Moltbook プロフィール取得に失敗しました:', msg);
-        throw e;
       }
     } else {
       // 初回: Moltbook に Register
@@ -530,8 +526,7 @@ async function runCycle(isScheduled = false) {
     } else {
       console.error('エラー:', err.message);
     }
-    if (!isScheduled) process.exit(1);
-    console.log('[常駐] 次回は 30 分後に実行します。');
+    console.log('[常駐] エラーが発生しましたが、サーバーは継続します。次回は 30 分後に再試行します。');
   }
 }
 
