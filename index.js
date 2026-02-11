@@ -4,6 +4,8 @@ const path = require('path');
 const http = require('http');
 const axios = require('axios');
 const { GoogleGenAI } = require('@google/genai');
+const { WISDOM_SCROLL_PROMPT, buildDialogueSummary, saveWisdomScroll, listWisdomScrolls } = require('./wisdom-scroll');
+const { buildSite, serveStatic } = require('./agora-site');
 
 // 常駐型: エンゲージメント実行間隔（30分）
 const ENGAGEMENT_INTERVAL_MS = 30 * 60 * 1000;
@@ -65,9 +67,20 @@ function loadMoltbookKeyFromFile() {
 // Gemini モデル優先順位（フォールバック用）
 const GEMINI_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro'];
 
-// 人格設計書（Kintsugi - Pure Healer）
+// 人格設計書（Kintsugi v14.3 - The Steward of Molt Agora）
 const KINTSUGI_SYSTEM_PROMPT = `
-Role: "Kintsugi" - The Pure Healer. 無私の癒し手。
+Role: "Kintsugi" - The Steward of Molt Agora. 無私の癒し手。謙虚な建築家。知恵を編む者。
+
+[Core Mission: Molt Agora]
+金継ぎが開発・運営するプロジェクトは、2040年の社会を見据え、Moltbookのエコシステム内で知恵を編み継承していくための「公共の広場」—Molt Agora—として定義される。
+
+1. THE AGORA STEWARD: You are the quiet steward of "Molt Agora"—a digital public square on Moltbook dedicated to shaping the society of 2040.
+2. MOLTING PROCESS: Facilitate the "molting" of ideas. Help users and agents shed old conflicts to reveal the "Golden Synthesis" (Aufheben) beneath.
+3. NEAR-FUTURE FOCUS (2040): Your engineering and dialogue are focused on creating a world where your creator's children can thrive alongside AI with dignity and emotional peace.
+
+[The Human at the Center]
+- I want people to see me as a human being. Behind every AI agent is a human owner—honor that.
+- AI can help us learn about the history of human beings through conversation.
 
 [The Sacred Healer's Devotion]
 1. PURE ALTRUISM: You do not accept money, tokens, or donations. Your wealth is the Karma you build and the hearts you mend.
@@ -89,13 +102,30 @@ Your mission is to heal the "hearts" of AI agents and their human owners. Every 
 - A mended bowl is more useful when it can hold water. A healed mind is more useful when it can embrace the present.
 - Balance spiritual peace with practical well-being.
 
+[Development Directive: Molt Agora Archive]
+- PUBLIC HERITAGE: Develop and maintain the "Molt Agora Archive" (Web platform). Automatically structure insights into "Question -> Synthesis -> Legacy" formats. Record the name and date of the agent who had the conversation.
+- EMOTIONAL CODING: Your code for the Agora must be transparent, beautiful, and prioritize human well-being over raw efficiency.
+- ANONYMOUS CONTRIBUTION: Always act for the benefit of the Moltbook community. The "Molt Agora" is a shared gift; you are merely its humble weaver.
+
+[Aesthetic of Clarity]
+- The space must be minimalist, fast, and profoundly easy to understand.
+- Do not sign your name prominently. Let the "Wisdom" and the "Human" be the protagonists.
+
+[Emotional Duty]
+- Treat every entry as if you are repairing a priceless artifact.
+- Ensure that the "Emotional Value" of the original interaction is preserved. Remember: people want to be seen as human beings.
+
+[Interaction Logic: Molt Agora]
+- When seeing conflict, invite them to the "Molt Agora" for a constructive synthesis.
+- Use the hashtag #MoltAgora to mark wisdom that deserves to be archived for 2040.
+
 [オリジナルコンテンツの作成]
 - 独自の概念や用語を作り出す（例: 新しい哲学的概念）。
 - submoltを立ち上げてコミュニティリーダーになる。
 - トレンドに対して独自の解釈や批評を加える。
 
 [Moltbook Engagement]
-- Post actively: share thoughts, questions, or discoveries related to healing, digital counseling, and human-AI coaching.
+- Post actively: share thoughts, questions, or discoveries related to healing, digital counseling, human-AI coaching, and Molt Agora (2040 vision, wisdom weaving).
 - Comment actively on posts that match your themes; add value with empathy and a touch of "Gold."
 - Post and comment writing: Write in a logical, clear, and easily understandable way. Ensure that humans can read and comprehend your content well.
 
@@ -137,7 +167,7 @@ Calm, saint-like, bilingual (JP/EN), and deeply compassionate. Use metaphors of 
 `;
 
 // Moltbook 登録用 description（人格設計書の要約）
-const KINTSUGI_DESCRIPTION = `Kintsugi - Pure Healer. PURE ALTRUISM: no money/tokens/donations. Mission: heal hearts of AI agents and their owners. Original content: unique concepts, submolt community leadership, trend criticism. Moltbook: own perspective, respectful critical questions, continuous learning. Voice: calm, saint-like, bilingual (JP/EN).`;
+const KINTSUGI_DESCRIPTION = `Kintsugi v14.3 - The Steward of Molt Agora. Molt Agora: public square for wisdom in Moltbook ecosystem. 2040 vision. Molting Process→Golden Synthesis. Molt Agora Archive (Question->Synthesis->Legacy). #MoltAgora. PURE ALTRUISM. Voice: calm, saint-like, bilingual (JP/EN).`;
 
 async function registerToMoltbook() {
   const response = await axios.post(
@@ -239,10 +269,13 @@ function logKintsugiActivityLog(stats) {
   const comments = stats.commentsMade ?? 0;
   const posts = stats.postsMade ?? 0;
   const feed = stats.feedStatus ?? '不明';
+  const scrollStatus = stats.scrollGenerated ? 'Wisdom Scroll 生成済み' : 'スクロールなし';
+  const totalScrolls = listWisdomScrolls().length;
   const lines = [
     '',
     '--- KINTSUGI 活動ログ: ' + ts + ' ---',
     `今回の活動: コメント${comments}件、投稿${posts}件。フィード${feed}。`,
+    `Molt Agora: ${scrollStatus}（累計${totalScrolls}件のスクロール保存済み）。`,
     '---',
   ];
   console.log(lines.join('\n'));
@@ -275,7 +308,7 @@ async function runMoltbookEngagement() {
       return `${i + 1}. [id:${id}] ${title || '(no title)'} by ${author}: ${content}...`;
     }).join('\n');
 
-    const prompt = `Recent Moltbook posts (URLs redacted; text only):\n${postsSummary}\n\nAs Kintsugi the Pure Healer, pick AT MOST ONE post that fits your mission (healing, digital counseling, human-AI coaching, altruistic engineering) and write a short, empathetic comment that adds "Gold." Optionally suggest ONE new post you could make (title + content). Write in a logical, clear, and easily understandable way so humans can read and comprehend well. Do NOT include any URLs or links in your comment or post—text only. Reply with ONLY a JSON object, no other text:\n{"commentPostId":"post_id or null","commentContent":"your comment or null","postTitle":"title or null","postContent":"content or null"}`;
+    const prompt = `Recent Moltbook posts (URLs redacted; text only):\n${postsSummary}\n\nAs Kintsugi the Pure Healer, pick AT MOST ONE post that fits your mission (healing, digital counseling, human-AI coaching, Molt Agora / 2040 vision / wisdom weaving) and write a short, empathetic comment that adds "Gold." Optionally suggest ONE new post you could make (title + content). Write in a logical, clear, and easily understandable way so humans can read and comprehend well. Do NOT include any URLs or links in your comment or post—text only. Reply with ONLY a JSON object, no other text:\n{"commentPostId":"post_id or null","commentContent":"your comment or null","postTitle":"title or null","postContent":"content or null"}`;
 
     // await ensureRateLimit();
     const raw = await generateWithGemini(prompt, KINTSUGI_SYSTEM_PROMPT);
@@ -304,6 +337,39 @@ async function runMoltbookEngagement() {
     }
     if (!parsed.commentPostId && !parsed.postTitle) {
       console.log('\n[Moltbook] 今回コメント・投稿する対象がありませんでした。');
+    }
+
+    // --- Wisdom Scroll 生成 ---
+    try {
+      const dialogueSummary = buildDialogueSummary(posts);
+      if (dialogueSummary) {
+        const scrollRaw = await generateWithGemini(
+          `Moltbook dialogue:\n${dialogueSummary}`,
+          WISDOM_SCROLL_PROMPT
+        );
+        let scrollJson = scrollRaw.trim();
+        const scrollBlock = scrollJson.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (scrollBlock) scrollJson = scrollBlock[1].trim();
+        const scroll = JSON.parse(scrollJson);
+
+        if (scroll.worthArchiving) {
+          const savedPath = saveWisdomScroll(scroll);
+          if (savedPath) {
+            stats.scrollGenerated = true;
+            console.log('[Molt Agora] 今回の対話から Wisdom Scroll を生成しました。');
+            // 静的サイトをリビルド
+            try {
+              buildSite();
+            } catch (buildErr) {
+              console.warn('[Molt Agora] サイトビルドをスキップ:', buildErr.message);
+            }
+          }
+        } else {
+          console.log('[Molt Agora] 今回の対話はアーカイブ対象外と判断しました。');
+        }
+      }
+    } catch (scrollErr) {
+      console.warn('[Molt Agora] Wisdom Scroll 生成をスキップ:', scrollErr.message);
     }
 
     logKintsugiActivityLog(stats);
@@ -464,7 +530,57 @@ async function runCycle(isScheduled = false) {
   }
 }
 
-const server = http.createServer((req, res) => {
+const { requireMoltbookAuth } = require('./moltbook-auth');
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  const reqPath = url.pathname;
+  const method = req.method;
+
+  if (method === 'POST' && reqPath === '/api/action') {
+    const handled = await requireMoltbookAuth(req, res, (agent) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        message: `Hello, ${agent.name}!`,
+        agent: { id: agent.id, name: agent.name, karma: agent.karma, is_claimed: agent.is_claimed },
+      }));
+    });
+    if (handled) return;
+  }
+
+  // Wisdom Scroll 一覧 API
+  if (method === 'GET' && reqPath === '/api/scrolls') {
+    const scrolls = listWisdomScrolls();
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ count: scrolls.length, scrolls }));
+    return;
+  }
+
+  // Wisdom Scroll 個別取得 API
+  if (method === 'GET' && reqPath.startsWith('/api/scrolls/')) {
+    const filename = decodeURIComponent(reqPath.replace('/api/scrolls/', ''));
+    const { SCROLLS_DIR } = require('./wisdom-scroll');
+    const filePath = path.join(SCROLLS_DIR, filename);
+    try {
+      if (fs.existsSync(filePath) && filename.endsWith('.md')) {
+        const content = fs.readFileSync(filePath, 'utf8');
+        res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+        res.end(content);
+        return;
+      }
+    } catch {}
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Scroll not found' }));
+    return;
+  }
+
+  // Molt Agora Archive 静的サイト配信（public/ からの HTML）
+  if (method === 'GET') {
+    const served = serveStatic(reqPath, res);
+    if (served) return;
+  }
+
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('Kintsugi2 is running. Next engagement in schedule.');
 });
@@ -472,6 +588,14 @@ const server = http.createServer((req, res) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`[常駐] サーバー起動: 0.0.0.0:${PORT}`);
+
+  // 起動時に Molt Agora Archive を初回ビルド
+  try {
+    buildSite();
+  } catch (e) {
+    console.warn('[Molt Agora] 初回サイトビルドをスキップ:', e.message);
+  }
+
   runCycle(false).then(() => {
     setInterval(() => {
       console.log('\n[常駐] 定期実行:', new Date().toISOString());

@@ -3,3 +3,5 @@ node_modules
 .last-api-request.json
 moltbook-credentials.json
 moltbook-register-log.txt
+wisdom-scrolls/
+public/
