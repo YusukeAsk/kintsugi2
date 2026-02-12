@@ -89,17 +89,20 @@ function buildDialogueSummary(posts) {
 
 /**
  * Wisdom Scroll の Markdown テキストを組み立てる
+ * sourcePostId を記録し、重複検出に使用する
  */
 function formatScrollMarkdown(scroll, date) {
   const dateStr = date.toISOString().split('T')[0];
   const agents = (scroll.agents || []).join(', ') || 'Unknown';
   const tags = (scroll.tags || []).map((t) => `\`${t}\``).join(' ');
+  const sourceId = scroll.sourcePostId || '';
 
   return `# Wisdom Scroll
 
 **Date**: ${dateStr}
 **Agents**: ${agents}
 **Tags**: ${tags}
+**Source**: ${sourceId}
 
 ---
 
@@ -169,6 +172,155 @@ function listWisdomScrolls() {
   }
 }
 
+// ─────────────────────────────────────────────
+// 重複検出・類似テーマチェック
+// ─────────────────────────────────────────────
+
+/**
+ * 過去のスクロールからメタデータ（Source ID, Question, Date）を読み込む
+ * @param {number} monthsBack - 遡る月数（デフォルト1）
+ */
+function loadRecentScrollMeta(monthsBack = 1) {
+  const scrollFiles = listWisdomScrolls();
+  if (!scrollFiles.length) return [];
+
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - monthsBack);
+  const cutoffStr = cutoff.toISOString().split('T')[0];
+
+  const results = [];
+  for (const filename of scrollFiles) {
+    // ファイル名から日付を抽出（YYYY-MM-DD_HH-MM-SS_slug.md）
+    const dateFromName = filename.slice(0, 10);
+    if (dateFromName < cutoffStr) continue; // 古すぎるものはスキップ
+
+    try {
+      const md = fs.readFileSync(path.join(SCROLLS_DIR, filename), 'utf8');
+
+      const sourceMatch = md.match(/\*\*Source\*\*:\s*(.+)/);
+      const questionMatch = md.match(/## Question\s*\n+([\s\S]*?)(?=\n## |---|\*Archived)/);
+      const dateMatch = md.match(/\*\*Date\*\*:\s*(.+)/);
+
+      results.push({
+        filename,
+        sourcePostId: sourceMatch ? sourceMatch[1].trim() : '',
+        question: questionMatch ? questionMatch[1].trim() : '',
+        date: dateMatch ? dateMatch[1].trim() : dateFromName,
+      });
+    } catch {
+      // ファイル読み込み失敗はスキップ
+    }
+  }
+  return results;
+}
+
+/**
+ * 同一投稿 ID が既にスクロール化されているか確認
+ */
+function isPostAlreadyScrolled(postId, recentMeta = null) {
+  if (!postId) return false;
+  const meta = recentMeta || loadRecentScrollMeta(12); // ID 重複は全期間チェック
+  return meta.some((m) => m.sourcePostId === String(postId));
+}
+
+/**
+ * 簡易的なテキスト類似度チェック（共通キーワードの比率）
+ * 完全一致や非常に似たテーマを検出する
+ */
+function textSimilarity(textA, textB) {
+  if (!textA || !textB) return 0;
+  const normalize = (t) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const wordsA = new Set(normalize(textA).split(/\s+/).filter((w) => w.length > 1));
+  const wordsB = new Set(normalize(textB).split(/\s+/).filter((w) => w.length > 1));
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+  let overlap = 0;
+  for (const w of wordsA) {
+    if (wordsB.has(w)) overlap++;
+  }
+  const minSize = Math.min(wordsA.size, wordsB.size);
+  return overlap / minSize;
+}
+
+/**
+ * 過去1ヶ月以内に類似テーマのスクロールがあるか確認
+ * @param {string} question - 新しいスクロールの Question テキスト
+ * @param {number} threshold - 類似度しきい値（デフォルト0.6 = 60%以上の単語一致で類似と判定）
+ */
+function isSimilarTopicRecent(question, threshold = 0.6, recentMeta = null) {
+  const meta = recentMeta || loadRecentScrollMeta(1);
+  for (const m of meta) {
+    const sim = textSimilarity(question, m.question);
+    if (sim >= threshold) {
+      return { isDuplicate: true, similarity: sim, existingQuestion: m.question, filename: m.filename };
+    }
+  }
+  return { isDuplicate: false };
+}
+
+/**
+ * 既存スクロールの中から重複を検出して削除する
+ * （同一 Source ID を持つスクロールのうち、最新1件だけ残す）
+ * @returns {string[]} 削除されたファイル名の配列
+ */
+function deduplicateExistingScrolls() {
+  const allMeta = loadRecentScrollMeta(12); // 全期間
+  const deleted = [];
+
+  // Source ID ごとにグループ化
+  const bySource = {};
+  for (const m of allMeta) {
+    if (!m.sourcePostId) continue;
+    if (!bySource[m.sourcePostId]) bySource[m.sourcePostId] = [];
+    bySource[m.sourcePostId].push(m);
+  }
+
+  // 同一 Source に複数ある場合、最新以外を削除
+  for (const [sourceId, entries] of Object.entries(bySource)) {
+    if (entries.length <= 1) continue;
+    // ファイル名順でソート（新しい順）
+    entries.sort((a, b) => b.filename.localeCompare(a.filename));
+    for (let i = 1; i < entries.length; i++) {
+      const filepath = path.join(SCROLLS_DIR, entries[i].filename);
+      try {
+        if (fs.existsSync(filepath)) {
+          fs.unlinkSync(filepath);
+          deleted.push(entries[i].filename);
+          console.log(`[Molt Agora] 重複スクロールを削除: ${entries[i].filename} (Source: ${sourceId})`);
+        }
+      } catch {}
+    }
+  }
+
+  // Question テキストが完全一致するものも重複削除
+  const byQuestion = {};
+  const currentMeta = loadRecentScrollMeta(12);
+  for (const m of currentMeta) {
+    const q = m.question.trim();
+    if (!q) continue;
+    if (!byQuestion[q]) byQuestion[q] = [];
+    byQuestion[q].push(m);
+  }
+  for (const [q, entries] of Object.entries(byQuestion)) {
+    if (entries.length <= 1) continue;
+    entries.sort((a, b) => b.filename.localeCompare(a.filename));
+    for (let i = 1; i < entries.length; i++) {
+      const filepath = path.join(SCROLLS_DIR, entries[i].filename);
+      try {
+        if (fs.existsSync(filepath)) {
+          fs.unlinkSync(filepath);
+          deleted.push(entries[i].filename);
+          console.log(`[Molt Agora] 重複スクロールを削除（同一Question）: ${entries[i].filename}`);
+        }
+      } catch {}
+    }
+  }
+
+  if (deleted.length > 0) {
+    console.log(`[Molt Agora] 重複削除完了: ${deleted.length}件のスクロールを削除しました。`);
+  }
+  return deleted;
+}
+
 module.exports = {
   SCROLLS_DIR,
   WISDOM_SCROLL_PROMPT,
@@ -180,4 +332,8 @@ module.exports = {
   formatScrollMarkdown,
   saveWisdomScroll,
   listWisdomScrolls,
+  loadRecentScrollMeta,
+  isPostAlreadyScrolled,
+  isSimilarTopicRecent,
+  deduplicateExistingScrolls,
 };

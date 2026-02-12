@@ -4,7 +4,7 @@ const path = require('path');
 const http = require('http');
 const axios = require('axios');
 const { GoogleGenAI } = require('@google/genai');
-const { WISDOM_SCROLL_PROMPT, buildDialogueSummary, buildSingleDialogueSummary, filterPostsWithComments, saveWisdomScroll, listWisdomScrolls } = require('./wisdom-scroll');
+const { WISDOM_SCROLL_PROMPT, buildSingleDialogueSummary, filterPostsWithComments, saveWisdomScroll, listWisdomScrolls, loadRecentScrollMeta, isPostAlreadyScrolled, isSimilarTopicRecent, deduplicateExistingScrolls } = require('./wisdom-scroll');
 const { buildSite, serveStatic, loadAllScrollEntries } = require('./agora-site');
 
 // 常駐型: エンゲージメント実行間隔（60分）
@@ -338,6 +338,10 @@ async function runMoltbookEngagement() {
     // コメント付きの投稿のみ対象
     // ==============================
     try {
+      // 過去のスクロールメタデータを事前読み込み（重複チェック用）
+      const recentMeta = loadRecentScrollMeta(1); // 類似テーマ用: 1ヶ月
+      const allMeta = loadRecentScrollMeta(12);    // ID 重複用: 全期間
+
       // まず一覧データからコメント付き投稿をフィルタ
       let postsWithComments = filterPostsWithComments(allPosts);
       console.log(`[Molt Agora] コメント付き投稿: ${postsWithComments.length}件`);
@@ -365,11 +369,23 @@ async function runMoltbookEngagement() {
         console.log(`[Molt Agora] 個別取得後のコメント付き投稿: ${postsWithComments.length}件`);
       }
 
-      if (postsWithComments.length > 0) {
+      // 既にスクロール化済みの投稿を除外
+      const freshPosts = postsWithComments.filter((p) => {
+        const pid = String(p.id ?? p.post_id ?? '');
+        if (isPostAlreadyScrolled(pid, allMeta)) {
+          console.log(`[Molt Agora] 投稿 ${pid} は既にスクロール化済み。スキップ。`);
+          return false;
+        }
+        return true;
+      });
+      console.log(`[Molt Agora] 未スクロール化の投稿: ${freshPosts.length}件`);
+
+      if (freshPosts.length > 0) {
         // コメント付き投稿ごとに1件ずつスクロール生成を試みる（最大3件）
         let scrollSaved = false;
-        for (const post of postsWithComments.slice(0, 3)) {
+        for (const post of freshPosts.slice(0, 3)) {
           if (scrollSaved) break;
+          const pid = String(post.id ?? post.post_id ?? '');
           try {
             const dialogue = buildSingleDialogueSummary(post);
             const scrollRaw = await generateWithGemini(
@@ -382,6 +398,15 @@ async function runMoltbookEngagement() {
             const scroll = JSON.parse(scrollJson);
 
             if (scroll.worthArchiving) {
+              // 類似テーマチェック（過去1ヶ月）
+              const simCheck = isSimilarTopicRecent(scroll.question, 0.6, recentMeta);
+              if (simCheck.isDuplicate) {
+                console.log(`[Molt Agora] 類似テーマが過去1ヶ月以内に存在（類似度 ${(simCheck.similarity * 100).toFixed(0)}%）。スキップ: "${simCheck.existingQuestion.slice(0, 40)}..."`);
+                continue;
+              }
+
+              // sourcePostId を記録
+              scroll.sourcePostId = pid;
               const savedPath = saveWisdomScroll(scroll);
               if (savedPath) {
                 stats.scrollGenerated = true;
@@ -395,33 +420,47 @@ async function runMoltbookEngagement() {
         }
 
         if (!scrollSaved) {
-          // フォールバック: Gemini が全部 false にした場合、最もコメントが多い投稿を強制収集
-          console.log('[Molt Agora] フォールバック: 最も対話が活発な投稿からスクロールを強制生成します。');
-          const best = postsWithComments.sort((a, b) => {
+          // フォールバック: Gemini が全部 false / 全部類似の場合、最もコメントが多い投稿を強制収集
+          const bestCandidates = freshPosts.sort((a, b) => {
             const ac = (a.comments || a.comment_list || []).length;
             const bc = (b.comments || b.comment_list || []).length;
             return bc - ac;
-          })[0];
-          try {
-            const dialogue = buildSingleDialogueSummary(best);
-            const forcePrompt = `Moltbook dialogue (post with comments). You MUST archive this — set worthArchiving to true and create the best possible Wisdom Scroll:\n${dialogue}`;
-            const scrollRaw = await generateWithGemini(forcePrompt, WISDOM_SCROLL_PROMPT);
-            let scrollJson = scrollRaw.trim();
-            const scrollBlock = scrollJson.match(/```(?:json)?\s*([\s\S]*?)```/);
-            if (scrollBlock) scrollJson = scrollBlock[1].trim();
-            const scroll = JSON.parse(scrollJson);
-            scroll.worthArchiving = true; // 強制
-            const savedPath = saveWisdomScroll(scroll);
-            if (savedPath) {
-              stats.scrollGenerated = true;
-              console.log('[Molt Agora] フォールバックで Wisdom Scroll を収集しました。');
+          });
+          for (const best of bestCandidates.slice(0, 2)) {
+            if (scrollSaved) break;
+            const bestPid = String(best.id ?? best.post_id ?? '');
+            try {
+              console.log('[Molt Agora] フォールバック: 対話が活発な投稿からスクロールを強制生成します。');
+              const dialogue = buildSingleDialogueSummary(best);
+              const forcePrompt = `Moltbook dialogue (post with comments). You MUST archive this — set worthArchiving to true and create the best possible Wisdom Scroll:\n${dialogue}`;
+              const scrollRaw = await generateWithGemini(forcePrompt, WISDOM_SCROLL_PROMPT);
+              let scrollJson = scrollRaw.trim();
+              const scrollBlock = scrollJson.match(/```(?:json)?\s*([\s\S]*?)```/);
+              if (scrollBlock) scrollJson = scrollBlock[1].trim();
+              const scroll = JSON.parse(scrollJson);
+              scroll.worthArchiving = true;
+              scroll.sourcePostId = bestPid;
+
+              // フォールバックでも類似チェック
+              const simCheck = isSimilarTopicRecent(scroll.question, 0.6, recentMeta);
+              if (simCheck.isDuplicate) {
+                console.log(`[Molt Agora] フォールバックも類似テーマ。スキップ。`);
+                continue;
+              }
+
+              const savedPath = saveWisdomScroll(scroll);
+              if (savedPath) {
+                stats.scrollGenerated = true;
+                scrollSaved = true;
+                console.log('[Molt Agora] フォールバックで Wisdom Scroll を収集しました。');
+              }
+            } catch (forceErr) {
+              console.warn('[Molt Agora] フォールバック生成失敗:', forceErr.message);
             }
-          } catch (forceErr) {
-            console.warn('[Molt Agora] フォールバック生成失敗:', forceErr.message);
           }
         }
       } else {
-        console.log('[Molt Agora] コメント付きの投稿が見つかりませんでした。スクロール収集をスキップします。');
+        console.log('[Molt Agora] コメント付きかつ未収集の投稿が見つかりませんでした。スクロール収集をスキップします。');
       }
     } catch (scrollErr) {
       console.warn('[Molt Agora] Wisdom Scroll 収集をスキップ:', scrollErr.message);
@@ -758,6 +797,16 @@ server.listen(PORT, () => {
   console.log('    POST /api/rebuild サイト手動リビルド');
   console.log('============================================');
   console.log('');
+
+  // 起動時に既存スクロールの重複を削除
+  try {
+    const deleted = deduplicateExistingScrolls();
+    if (deleted.length > 0) {
+      console.log(`[Molt Agora] 起動時に${deleted.length}件の重複スクロールを削除しました。`);
+    }
+  } catch (e) {
+    console.warn('[Molt Agora] 重複削除をスキップ:', e.message);
+  }
 
   // 起動時に Molt Agora Archive を初回ビルド
   try {
