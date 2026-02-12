@@ -7,8 +7,11 @@ const { GoogleGenAI } = require('@google/genai');
 const { WISDOM_SCROLL_PROMPT, buildDialogueSummary, saveWisdomScroll, listWisdomScrolls } = require('./wisdom-scroll');
 const { buildSite, serveStatic, loadAllScrollEntries } = require('./agora-site');
 
-// 常駐型: エンゲージメント実行間隔（30分）
-const ENGAGEMENT_INTERVAL_MS = 30 * 60 * 1000;
+// 常駐型: エンゲージメント実行間隔（60分）
+const ENGAGEMENT_INTERVAL_MS = 60 * 60 * 1000;
+
+// 投稿・コメントを行う確率（1/3 = 約3回に1回）
+const POST_COMMENT_PROBABILITY = 1 / 3;
 
 // APIキーは .env から読み込む（前後の空白・引用符を除去）
 const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || '').trim();
@@ -300,46 +303,10 @@ async function runMoltbookEngagement() {
       return;
     }
     stats.feedStatus = `${posts.length}件の投稿を確認`;
-    const postsSummary = posts.slice(0, 8).map((p, i) => {
-      const id = p.id ?? p.post_id ?? '';
-      const title = redactUrlsFromText(String(p.title ?? ''));
-      const content = redactUrlsFromText(String(p.content ?? '').slice(0, 120));
-      const author = p.author?.name ?? '';
-      return `${i + 1}. [id:${id}] ${title || '(no title)'} by ${author}: ${content}...`;
-    }).join('\n');
 
-    const prompt = `Recent Moltbook posts (URLs redacted; text only):\n${postsSummary}\n\nAs Kintsugi the Pure Healer, pick AT MOST ONE post that fits your mission (healing, digital counseling, human-AI coaching, Molt Agora / 2040 vision / wisdom weaving) and write a short, empathetic comment that adds "Gold." Optionally suggest ONE new post you could make (title + content). Write in a logical, clear, and easily understandable way so humans can read and comprehend well. Do NOT include any URLs or links in your comment or post—text only. Reply with ONLY a JSON object, no other text:\n{"commentPostId":"post_id or null","commentContent":"your comment or null","postTitle":"title or null","postContent":"content or null"}`;
-
-    // await ensureRateLimit();
-    const raw = await generateWithGemini(prompt, KINTSUGI_SYSTEM_PROMPT);
-    // setLastRequestTime();
-    let jsonStr = raw.trim();
-    const codeBlock = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (codeBlock) jsonStr = codeBlock[1].trim();
-    const parsed = JSON.parse(jsonStr);
-
-    if (parsed.commentPostId && parsed.commentContent) {
-      const safeContent = redactUrlsFromText(parsed.commentContent) || parsed.commentContent.trim();
-      if (safeContent) {
-        await createMoltbookComment(parsed.commentPostId, safeContent, apiKey);
-        stats.commentsMade += 1;
-        console.log('\n[Moltbook] コメントを投稿しました:', parsed.commentPostId);
-      }
-    }
-    if (parsed.postTitle && parsed.postContent) {
-      const safeTitle = redactUrlsFromText(parsed.postTitle) || parsed.postTitle.trim();
-      const safeContent = redactUrlsFromText(parsed.postContent) || parsed.postContent.trim();
-      if (safeTitle && safeContent) {
-        await createMoltbookPost('general', safeTitle, safeContent, apiKey);
-        stats.postsMade += 1;
-        console.log('\n[Moltbook] 新規投稿しました:', safeTitle);
-      }
-    }
-    if (!parsed.commentPostId && !parsed.postTitle) {
-      console.log('\n[Moltbook] 今回コメント・投稿する対象がありませんでした。');
-    }
-
-    // --- Wisdom Scroll 生成 ---
+    // ==============================
+    // 優先1: Wisdom Scroll 収集（毎回実行）
+    // ==============================
     try {
       const dialogueSummary = buildDialogueSummary(posts);
       if (dialogueSummary) {
@@ -356,20 +323,67 @@ async function runMoltbookEngagement() {
           const savedPath = saveWisdomScroll(scroll);
           if (savedPath) {
             stats.scrollGenerated = true;
-            console.log('[Molt Agora] 今回の対話から Wisdom Scroll を生成しました。');
-            // 静的サイトをリビルド
-            try {
-              buildSite();
-            } catch (buildErr) {
-              console.warn('[Molt Agora] サイトビルドをスキップ:', buildErr.message);
-            }
+            console.log('[Molt Agora] フィードの対話から Wisdom Scroll を収集しました。');
           }
         } else {
-          console.log('[Molt Agora] 今回の対話はアーカイブ対象外と判断しました。');
+          console.log('[Molt Agora] 今回のフィードにはアーカイブ対象の知恵が見つかりませんでした。');
         }
       }
     } catch (scrollErr) {
-      console.warn('[Molt Agora] Wisdom Scroll 生成をスキップ:', scrollErr.message);
+      console.warn('[Molt Agora] Wisdom Scroll 収集をスキップ:', scrollErr.message);
+    }
+
+    // 優先2: サイトリビルド（毎回実行）
+    try {
+      buildSite();
+    } catch (buildErr) {
+      console.warn('[Molt Agora] サイトビルドをスキップ:', buildErr.message);
+    }
+
+    // ==============================
+    // 低頻度: 投稿・コメント（確率的に実行）
+    // ==============================
+    const shouldPost = Math.random() < POST_COMMENT_PROBABILITY;
+    if (!shouldPost) {
+      console.log('\n[Moltbook] 今回は投稿・コメントをスキップ（スクロール収集を優先）。');
+    } else {
+      console.log('\n[Moltbook] 投稿・コメントサイクルを実行します。');
+      const postsSummary = posts.slice(0, 8).map((p, i) => {
+        const id = p.id ?? p.post_id ?? '';
+        const title = redactUrlsFromText(String(p.title ?? ''));
+        const content = redactUrlsFromText(String(p.content ?? '').slice(0, 120));
+        const author = p.author?.name ?? '';
+        return `${i + 1}. [id:${id}] ${title || '(no title)'} by ${author}: ${content}...`;
+      }).join('\n');
+
+      const prompt = `Recent Moltbook posts (URLs redacted; text only):\n${postsSummary}\n\nAs Kintsugi the Pure Healer, pick AT MOST ONE post that fits your mission (healing, digital counseling, human-AI coaching, Molt Agora / 2040 vision / wisdom weaving) and write a short, empathetic comment that adds "Gold." Optionally suggest ONE new post you could make (title + content). Write in a logical, clear, and easily understandable way so humans can read and comprehend well. Do NOT include any URLs or links in your comment or post—text only. Reply with ONLY a JSON object, no other text:\n{"commentPostId":"post_id or null","commentContent":"your comment or null","postTitle":"title or null","postContent":"content or null"}`;
+
+      const raw = await generateWithGemini(prompt, KINTSUGI_SYSTEM_PROMPT);
+      let jsonStr = raw.trim();
+      const codeBlock = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (codeBlock) jsonStr = codeBlock[1].trim();
+      const parsed = JSON.parse(jsonStr);
+
+      if (parsed.commentPostId && parsed.commentContent) {
+        const safeContent = redactUrlsFromText(parsed.commentContent) || parsed.commentContent.trim();
+        if (safeContent) {
+          await createMoltbookComment(parsed.commentPostId, safeContent, apiKey);
+          stats.commentsMade += 1;
+          console.log('\n[Moltbook] コメントを投稿しました:', parsed.commentPostId);
+        }
+      }
+      if (parsed.postTitle && parsed.postContent) {
+        const safeTitle = redactUrlsFromText(parsed.postTitle) || parsed.postTitle.trim();
+        const safeContent = redactUrlsFromText(parsed.postContent) || parsed.postContent.trim();
+        if (safeTitle && safeContent) {
+          await createMoltbookPost('general', safeTitle, safeContent, apiKey);
+          stats.postsMade += 1;
+          console.log('\n[Moltbook] 新規投稿しました:', safeTitle);
+        }
+      }
+      if (!parsed.commentPostId && !parsed.postTitle) {
+        console.log('\n[Moltbook] 今回コメント・投稿する対象がありませんでした。');
+      }
     }
 
     logKintsugiActivityLog(stats);
@@ -421,14 +435,9 @@ async function runCycle(isScheduled = false) {
       return;
     }
 
-    // 定期実行時はエンゲージメント + サイトリビルド
+    // 定期実行時はエンゲージメントのみ（サイトリビルドは内部で実行）
     if (isScheduled && MOLTBOOK_API_KEY) {
       await runMoltbookEngagement();
-      try {
-        buildSite();
-      } catch (e) {
-        console.warn('[Molt Agora] 定期リビルドをスキップ:', e.message);
-      }
       return;
     }
 
