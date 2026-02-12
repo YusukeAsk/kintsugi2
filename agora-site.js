@@ -352,7 +352,7 @@ function buildIndexPage(scrollEntries) {
     const preview = escapeHtml(entry.synthesis.slice(0, 140)) + (entry.synthesis.length > 140 ? '...' : '');
     return `
       <li class="scroll-card">
-        <h2><a href="/${entry.slug}.html">${escapeHtml(entry.question)}</a></h2>
+        <h2><a href="/${encodeURIComponent(entry.slug)}.html">${escapeHtml(entry.question)}</a></h2>
         <div class="scroll-meta">${escapeHtml(entry.date)} &middot; ${escapeHtml(entry.agents)} ${tagsHtml}</div>
         <div class="scroll-preview">${preview}</div>
       </li>`;
@@ -478,21 +478,39 @@ const MIME_TYPES = {
  * @returns {boolean} 配信できた場合 true
  */
 function serveStatic(reqPath, res) {
-  // パストラバーサル防止
-  const safePath = path.normalize(reqPath).replace(/^(\.\.[/\\])+/, '');
-  let filePath = path.join(PUBLIC_DIR, safePath);
-
-  // / → /index.html
-  if (safePath === '/' || safePath === '' || safePath === '\\') {
-    filePath = path.join(PUBLIC_DIR, 'index.html');
-  }
-
-  // .html 省略対応
-  if (!path.extname(filePath)) {
-    filePath += '.html';
-  }
-
   try {
+    // URL デコード（日本語ファイル名対応）
+    let decoded;
+    try {
+      decoded = decodeURIComponent(reqPath);
+    } catch {
+      decoded = reqPath;
+    }
+
+    // パストラバーサル防止
+    const safePath = path.normalize(decoded).replace(/^(\.\.[/\\])+/, '');
+
+    // / → /index.html
+    if (safePath === '/' || safePath === '' || safePath === '\\' || safePath === path.sep) {
+      const indexPath = path.join(PUBLIC_DIR, 'index.html');
+      if (!fs.existsSync(indexPath)) return false;
+      const content = fs.readFileSync(indexPath);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(content);
+      return true;
+    }
+
+    let filePath = path.join(PUBLIC_DIR, safePath);
+
+    // .html 省略対応
+    if (!path.extname(filePath)) {
+      filePath += '.html';
+    }
+
+    // public/ の外に出ていないか確認
+    const resolved = path.resolve(filePath);
+    if (!resolved.startsWith(path.resolve(PUBLIC_DIR))) return false;
+
     if (!fs.existsSync(filePath)) return false;
 
     const ext = path.extname(filePath);
