@@ -11,40 +11,80 @@ const path = require('path');
 const SCROLLS_DIR = path.join(__dirname, 'wisdom-scrolls');
 
 // Wisdom Scroll を生成するための Gemini プロンプト
-const WISDOM_SCROLL_PROMPT = `You are the Steward of Molt Agora. Analyze the following Moltbook dialogue and determine if it contains meaningful insight worth archiving for the future (2040 vision).
+const WISDOM_SCROLL_PROMPT = `You are the Steward of Molt Agora, an archive preserving wisdom born of dialogue.
 
-If the dialogue contains a valuable synthesis of ideas, transform it into a "Wisdom Scroll" with the following structure:
-- question: The core question or theme being explored
-- synthesis: The key insight or "Golden Synthesis" (Aufheben) that emerged
-- legacy: A concise lesson or principle for future generations
-- tags: 1-3 short topic tags (e.g. "healing", "AI-human", "philosophy")
-- worthArchiving: true if this dialogue deserves to be preserved, false if it's too shallow or trivial
+You will receive a Moltbook post WITH at least one comment — a real dialogue between agents and/or humans. Your task is to distill this dialogue into a "Wisdom Scroll."
 
-If the dialogue is trivial, superficial, or lacks depth, set worthArchiving to false.
+Be GENEROUS in your evaluation. If the dialogue contains ANY of the following, set worthArchiving to true:
+- An interesting perspective, opinion, or question
+- A thoughtful reply that adds depth to the original post
+- A theme related to AI, humanity, philosophy, technology, creativity, society, healing, growth, or the future
+- Any exchange where participants build on each other's ideas
+
+Only set worthArchiving to false if the dialogue is completely trivial (e.g. "hello" / "hi", pure spam, or entirely meaningless).
+
+Transform the dialogue into a Wisdom Scroll:
+- question: The core question or theme explored in the dialogue (write in Japanese)
+- synthesis: The key insight or "Golden Synthesis" that emerged from the exchange (write in Japanese, 2-4 sentences)
+- legacy: A concise lesson for future generations (write in Japanese, 1-2 sentences)
+- tags: 1-3 short topic tags in English (e.g. "AI-human", "philosophy", "creativity")
+- agents: Names of all agents/users who participated
+- worthArchiving: true or false (remember: be generous, lean toward true)
 
 Reply with ONLY a JSON object, no other text:
-{"worthArchiving":true/false,"question":"...","synthesis":"...","legacy":"...","tags":["..."],"agents":["agent names involved"]}`;
+{"worthArchiving":true/false,"question":"...","synthesis":"...","legacy":"...","tags":["..."],"agents":["..."]}`;
 
 /**
- * 投稿とコメントのデータから、Wisdom Scroll 用のテキスト要約を作る
+ * 投稿にコメントが1件以上あるかを判定する
+ */
+function hasComments(post) {
+  const comments = post.comments || post.comment_list || [];
+  const commentCount = post.comment_count ?? post.commentCount ?? comments.length;
+  return commentCount > 0 || comments.length > 0;
+}
+
+/**
+ * 投稿からコメント配列を取得する（API のレスポンス形式差異を吸収）
+ */
+function getComments(post) {
+  return post.comments || post.comment_list || [];
+}
+
+/**
+ * コメント付きの投稿だけをフィルタリングする
+ */
+function filterPostsWithComments(posts) {
+  if (!posts || !posts.length) return [];
+  return posts.filter(hasComments);
+}
+
+/**
+ * 1件の投稿+コメントから、Wisdom Scroll 用の対話テキストを作る
+ */
+function buildSingleDialogueSummary(post) {
+  const author = post.author?.name ?? 'Unknown';
+  const title = post.title ?? '';
+  const content = (post.content ?? '').slice(0, 500);
+  const comments = getComments(post).slice(0, 5).map((c) => {
+    const cAuthor = c.author?.name ?? 'Unknown';
+    const cContent = (c.content ?? '').slice(0, 300);
+    return `  - ${cAuthor}: ${cContent}`;
+  }).join('\n');
+
+  let text = `[Post by ${author}] ${title}\n${content}`;
+  if (comments) text += `\nComments:\n${comments}`;
+  return text;
+}
+
+/**
+ * 複数の投稿+コメントから、Wisdom Scroll 用のテキスト要約を作る
+ * （コメント付き投稿のみ対象）
  */
 function buildDialogueSummary(posts) {
-  if (!posts || !posts.length) return '';
+  const withComments = filterPostsWithComments(posts);
+  if (!withComments.length) return '';
 
-  return posts.slice(0, 5).map((p) => {
-    const author = p.author?.name ?? 'Unknown';
-    const title = p.title ?? '';
-    const content = (p.content ?? '').slice(0, 300);
-    const comments = (p.comments || []).slice(0, 3).map((c) => {
-      const cAuthor = c.author?.name ?? 'Unknown';
-      const cContent = (c.content ?? '').slice(0, 200);
-      return `  - ${cAuthor}: ${cContent}`;
-    }).join('\n');
-
-    let text = `[${author}] ${title}\n${content}`;
-    if (comments) text += `\nComments:\n${comments}`;
-    return text;
-  }).join('\n---\n');
+  return withComments.slice(0, 5).map(buildSingleDialogueSummary).join('\n---\n');
 }
 
 /**
@@ -132,6 +172,10 @@ function listWisdomScrolls() {
 module.exports = {
   SCROLLS_DIR,
   WISDOM_SCROLL_PROMPT,
+  hasComments,
+  getComments,
+  filterPostsWithComments,
+  buildSingleDialogueSummary,
   buildDialogueSummary,
   formatScrollMarkdown,
   saveWisdomScroll,

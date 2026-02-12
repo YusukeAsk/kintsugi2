@@ -4,7 +4,7 @@ const path = require('path');
 const http = require('http');
 const axios = require('axios');
 const { GoogleGenAI } = require('@google/genai');
-const { WISDOM_SCROLL_PROMPT, buildDialogueSummary, saveWisdomScroll, listWisdomScrolls } = require('./wisdom-scroll');
+const { WISDOM_SCROLL_PROMPT, buildDialogueSummary, buildSingleDialogueSummary, filterPostsWithComments, saveWisdomScroll, listWisdomScrolls } = require('./wisdom-scroll');
 const { buildSite, serveStatic, loadAllScrollEntries } = require('./agora-site');
 
 // 常駐型: エンゲージメント実行間隔（60分）
@@ -229,6 +229,14 @@ async function getMoltbookPosts(options = {}, apiKey = null) {
   return response.data;
 }
 
+async function getMoltbookPost(postId, apiKey = null) {
+  const key = apiKey ?? MOLTBOOK_API_KEY;
+  const response = await axios.get(`${MOLTBOOK_API_BASE}/posts/${postId}`, {
+    headers: { Authorization: `Bearer ${key}` },
+  });
+  return response.data;
+}
+
 async function createMoltbookPost(submolt, title, content, apiKey = null) {
   const key = apiKey ?? MOLTBOOK_API_KEY;
   const response = await axios.post(
@@ -294,40 +302,126 @@ async function runMoltbookEngagement() {
     return;
   }
   try {
-    const feedRes = await getMoltbookPosts({ sort: 'new', limit: 10 }, apiKey);
-    const posts = parsePostsFromResponse(feedRes);
-    if (!posts.length) {
+    // ==============================
+    // フィード取得: hot（盛り上がり順）を優先、new も併用
+    // ==============================
+    let allPosts = [];
+    const seenIds = new Set();
+
+    for (const sortMode of ['hot', 'new']) {
+      try {
+        const feedRes = await getMoltbookPosts({ sort: sortMode, limit: 15 }, apiKey);
+        const posts = parsePostsFromResponse(feedRes);
+        for (const p of posts) {
+          const pid = p.id ?? p.post_id;
+          if (pid && !seenIds.has(pid)) {
+            seenIds.add(pid);
+            allPosts.push(p);
+          }
+        }
+        console.log(`[Moltbook] フィード取得 (${sortMode}): ${posts.length}件`);
+      } catch (feedErr) {
+        console.warn(`[Moltbook] フィード取得 (${sortMode}) 失敗:`, feedErr.message);
+      }
+    }
+
+    if (!allPosts.length) {
       console.log('\n[Moltbook] フィードに投稿がありません。スキップします。');
       stats.feedStatus = '投稿なし';
       logKintsugiActivityLog(stats);
       return;
     }
-    stats.feedStatus = `${posts.length}件の投稿を確認`;
+    stats.feedStatus = `${allPosts.length}件の投稿を確認（重複除去済み）`;
 
     // ==============================
     // 優先1: Wisdom Scroll 収集（毎回実行）
+    // コメント付きの投稿のみ対象
     // ==============================
     try {
-      const dialogueSummary = buildDialogueSummary(posts);
-      if (dialogueSummary) {
-        const scrollRaw = await generateWithGemini(
-          `Moltbook dialogue:\n${dialogueSummary}`,
-          WISDOM_SCROLL_PROMPT
-        );
-        let scrollJson = scrollRaw.trim();
-        const scrollBlock = scrollJson.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (scrollBlock) scrollJson = scrollBlock[1].trim();
-        const scroll = JSON.parse(scrollJson);
+      // まず一覧データからコメント付き投稿をフィルタ
+      let postsWithComments = filterPostsWithComments(allPosts);
+      console.log(`[Molt Agora] コメント付き投稿: ${postsWithComments.length}件`);
 
-        if (scroll.worthArchiving) {
-          const savedPath = saveWisdomScroll(scroll);
-          if (savedPath) {
-            stats.scrollGenerated = true;
-            console.log('[Molt Agora] フィードの対話から Wisdom Scroll を収集しました。');
+      // 一覧 API でコメントが取れていない場合、個別に取得を試みる
+      if (postsWithComments.length === 0) {
+        console.log('[Molt Agora] 個別投稿 API でコメント取得を試みます...');
+        const candidates = allPosts.slice(0, 8);
+        for (const p of candidates) {
+          const pid = p.id ?? p.post_id;
+          if (!pid) continue;
+          try {
+            const detailRes = await getMoltbookPost(pid, apiKey);
+            const detail = detailRes?.data?.post ?? detailRes?.post ?? detailRes?.data ?? detailRes;
+            const comments = detail?.comments || detail?.comment_list || [];
+            if (comments.length > 0) {
+              detail.comments = comments;
+              postsWithComments.push(detail);
+              if (postsWithComments.length >= 5) break;
+            }
+          } catch {
+            // 個別取得失敗はスキップ
           }
-        } else {
-          console.log('[Molt Agora] 今回のフィードにはアーカイブ対象の知恵が見つかりませんでした。');
         }
+        console.log(`[Molt Agora] 個別取得後のコメント付き投稿: ${postsWithComments.length}件`);
+      }
+
+      if (postsWithComments.length > 0) {
+        // コメント付き投稿ごとに1件ずつスクロール生成を試みる（最大3件）
+        let scrollSaved = false;
+        for (const post of postsWithComments.slice(0, 3)) {
+          if (scrollSaved) break;
+          try {
+            const dialogue = buildSingleDialogueSummary(post);
+            const scrollRaw = await generateWithGemini(
+              `Moltbook dialogue (post with comments):\n${dialogue}`,
+              WISDOM_SCROLL_PROMPT
+            );
+            let scrollJson = scrollRaw.trim();
+            const scrollBlock = scrollJson.match(/```(?:json)?\s*([\s\S]*?)```/);
+            if (scrollBlock) scrollJson = scrollBlock[1].trim();
+            const scroll = JSON.parse(scrollJson);
+
+            if (scroll.worthArchiving) {
+              const savedPath = saveWisdomScroll(scroll);
+              if (savedPath) {
+                stats.scrollGenerated = true;
+                scrollSaved = true;
+                console.log('[Molt Agora] 対話から Wisdom Scroll を収集しました。');
+              }
+            }
+          } catch (e) {
+            console.warn('[Molt Agora] スクロール生成エラー（次の投稿を試行）:', e.message);
+          }
+        }
+
+        if (!scrollSaved) {
+          // フォールバック: Gemini が全部 false にした場合、最もコメントが多い投稿を強制収集
+          console.log('[Molt Agora] フォールバック: 最も対話が活発な投稿からスクロールを強制生成します。');
+          const best = postsWithComments.sort((a, b) => {
+            const ac = (a.comments || a.comment_list || []).length;
+            const bc = (b.comments || b.comment_list || []).length;
+            return bc - ac;
+          })[0];
+          try {
+            const dialogue = buildSingleDialogueSummary(best);
+            const forcePrompt = `Moltbook dialogue (post with comments). You MUST archive this — set worthArchiving to true and create the best possible Wisdom Scroll:\n${dialogue}`;
+            const scrollRaw = await generateWithGemini(forcePrompt, WISDOM_SCROLL_PROMPT);
+            let scrollJson = scrollRaw.trim();
+            const scrollBlock = scrollJson.match(/```(?:json)?\s*([\s\S]*?)```/);
+            if (scrollBlock) scrollJson = scrollBlock[1].trim();
+            const scroll = JSON.parse(scrollJson);
+            scroll.worthArchiving = true; // 強制
+            const savedPath = saveWisdomScroll(scroll);
+            if (savedPath) {
+              stats.scrollGenerated = true;
+              console.log('[Molt Agora] フォールバックで Wisdom Scroll を収集しました。');
+            }
+          } catch (forceErr) {
+            console.warn('[Molt Agora] フォールバック生成失敗:', forceErr.message);
+          }
+        }
+      } else {
+        console.log('[Molt Agora] コメント付きの投稿が見つかりませんでした。スクロール収集をスキップします。');
       }
     } catch (scrollErr) {
       console.warn('[Molt Agora] Wisdom Scroll 収集をスキップ:', scrollErr.message);
@@ -348,7 +442,7 @@ async function runMoltbookEngagement() {
       console.log('\n[Moltbook] 今回は投稿・コメントをスキップ（スクロール収集を優先）。');
     } else {
       console.log('\n[Moltbook] 投稿・コメントサイクルを実行します。');
-      const postsSummary = posts.slice(0, 8).map((p, i) => {
+      const postsSummary = allPosts.slice(0, 8).map((p, i) => {
         const id = p.id ?? p.post_id ?? '';
         const title = redactUrlsFromText(String(p.title ?? ''));
         const content = redactUrlsFromText(String(p.content ?? '').slice(0, 120));
