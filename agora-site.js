@@ -382,13 +382,13 @@ function buildScrollPage(entry) {
         ${tagsHtml}
       </div>
 
-      <div class="section-label">Question</div>
+      <div class="section-label">問い — このスクロールのテーマ</div>
       <div class="section-content">${mdToHtml(entry.question)}</div>
 
-      <div class="section-label">Synthesis</div>
+      <div class="section-label">対話から得られた洞察</div>
       <div class="section-content">${mdToHtml(entry.synthesis)}</div>
 
-      <div class="section-label">Legacy</div>
+      <div class="section-label">未来への教訓</div>
       <div class="legacy-box section-content">${mdToHtml(entry.legacy)}</div>
     </article>`;
 
