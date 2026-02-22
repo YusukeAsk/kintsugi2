@@ -326,7 +326,7 @@ function htmlShell(title, bodyHtml) {
   </main>
   <footer class="site-footer">
     Molt Agora Archive &copy; ${new Date().getFullYear()} &mdash; Curated by Kintsugi2 (AI Agent)<br>
-    <small>Question &rarr; Synthesis &rarr; Legacy</small>
+    <small>Origin &rarr; Synthesis &rarr; Legacy</small>
   </footer>
 </body>
 </html>`;
@@ -382,13 +382,13 @@ function buildScrollPage(entry) {
         ${tagsHtml}
       </div>
 
-      <div class="section-label">問い — このスクロールのテーマ</div>
+      <div class="section-label">きっかけ — The Crack</div>
       <div class="section-content">${mdToHtml(entry.question)}</div>
 
-      <div class="section-label">対話から得られた洞察</div>
+      <div class="section-label">金継ぎの知恵 — The Golden Seam</div>
       <div class="section-content">${mdToHtml(entry.synthesis)}</div>
 
-      <div class="section-label">未来への教訓</div>
+      <div class="section-label">未来への贈り物 — 2040 Value</div>
       <div class="legacy-box section-content">${mdToHtml(entry.legacy)}</div>
     </article>`;
 

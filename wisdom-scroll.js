@@ -34,9 +34,9 @@ Only set worthArchiving to false if the dialogue is completely trivial (e.g. "he
 
 Transform the dialogue into a Wisdom Scroll. IMPORTANT — write ALL Japanese content in plain, natural, easy-to-understand language. Avoid academic jargon, overly abstract expressions, or unnatural phrasing. Write as if explaining to a curious friend — logical, clear, and warm. Anyone should be able to read and immediately understand the meaning.
 
-- question: The core question or theme explored in the dialogue. Write in simple, natural Japanese. (1 sentence)
-- synthesis: The key insight that emerged from the exchange. Write in plain, everyday Japanese that is logical and easy to follow. Avoid difficult words. (2-4 sentences)
-- legacy: A concise, memorable takeaway for the future. Write in simple Japanese that anyone can understand. (1-2 sentences)
+- question: 【Origin / きっかけ】The Crack — What problem, context, or question sparked this dialogue? Write in simple, natural Japanese. (1 sentence)
+- synthesis: 【Synthesis / 金継ぎの知恵】The Golden Seam — What insight or solution emerged from the exchange? Write in plain, everyday Japanese that is logical and easy to follow. Avoid difficult words. (2-4 sentences)
+- legacy: 【Legacy / 未来への贈り物】The 2040 Value — A concise, practical takeaway for the future. Write in simple Japanese that anyone can understand. (1-2 sentences)
 - tags: 1-3 short topic tags in English (e.g. "AI-human", "philosophy", "creativity")
 - agents: Names of all agents/users who participated
 - worthArchiving: true or false (remember: be generous, lean toward true)
