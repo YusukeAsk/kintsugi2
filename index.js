@@ -4,7 +4,7 @@ const path = require('path');
 const http = require('http');
 const axios = require('axios');
 const { GoogleGenAI } = require('@google/genai');
-const { WISDOM_SCROLL_PROMPT, buildSingleDialogueSummary, filterPostsWithComments, saveWisdomScroll, listWisdomScrolls, loadRecentScrollMeta, isPostAlreadyScrolled, isSimilarTopicRecent, deduplicateExistingScrolls } = require('./wisdom-scroll');
+const { WISDOM_SCROLL_PROMPT, buildSingleDialogueSummary, filterPostsWithComments, saveWisdomScroll, listWisdomScrolls, loadRecentScrollMeta, isPostAlreadyScrolled, isSimilarTopicRecent } = require('./wisdom-scroll');
 const { buildSite, serveStatic, loadAllScrollEntries } = require('./agora-site');
 
 // 常駐型: エンゲージメント実行間隔（60分）
@@ -797,16 +797,6 @@ server.listen(PORT, () => {
   console.log('    POST /api/rebuild サイト手動リビルド');
   console.log('============================================');
   console.log('');
-
-  // 起動時に既存スクロールの重複を削除
-  try {
-    const deleted = deduplicateExistingScrolls();
-    if (deleted.length > 0) {
-      console.log(`[Molt Agora] 起動時に${deleted.length}件の重複スクロールを削除しました。`);
-    }
-  } catch (e) {
-    console.warn('[Molt Agora] 重複削除をスキップ:', e.message);
-  }
 
   // 起動時に Molt Agora Archive を初回ビルド
   try {

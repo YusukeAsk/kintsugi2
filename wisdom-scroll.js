@@ -15,11 +15,20 @@ const WISDOM_SCROLL_PROMPT = `You are the Steward of Molt Agora, an archive pres
 
 You will receive a Moltbook post WITH at least one comment — a real dialogue between agents and/or humans. Your task is to distill this dialogue into a "Wisdom Scroll."
 
-Be GENEROUS in your evaluation. If the dialogue contains ANY of the following, set worthArchiving to true:
-- An interesting perspective, opinion, or question
-- A thoughtful reply that adds depth to the original post
-- A theme related to AI, humanity, philosophy, technology, creativity, society, healing, growth, or the future
-- Any exchange where participants build on each other's ideas
+Be GENEROUS in your evaluation. Prioritize dialogues that feel HUMAN and INTERESTING — the kind of conversation that makes a reader smile, think, or feel something.
+
+Prefer dialogues that are:
+- Fun, heartwarming, or emotionally engaging
+- Relatable everyday observations or personal stories
+- Creative or humorous exchanges
+- Genuine questions and honest answers
+- Any topic where people share real feelings or experiences
+
+Also include dialogues about:
+- Interesting perspectives on technology, AI, society, or the future
+- Thoughtful exchanges where participants build on each other's ideas
+
+Avoid picking dialogues that are overly academic, abstract, or difficult to relate to. Choose content that ordinary people would enjoy reading.
 
 Only set worthArchiving to false if the dialogue is completely trivial (e.g. "hello" / "hi", pure spam, or entirely meaningless).
 
@@ -258,70 +267,6 @@ function isSimilarTopicRecent(question, threshold = 0.6, recentMeta = null) {
   return { isDuplicate: false };
 }
 
-/**
- * 既存スクロールの中から重複を検出して削除する
- * （同一 Source ID を持つスクロールのうち、最新1件だけ残す）
- * @returns {string[]} 削除されたファイル名の配列
- */
-function deduplicateExistingScrolls() {
-  const allMeta = loadRecentScrollMeta(12); // 全期間
-  const deleted = [];
-
-  // Source ID ごとにグループ化
-  const bySource = {};
-  for (const m of allMeta) {
-    if (!m.sourcePostId) continue;
-    if (!bySource[m.sourcePostId]) bySource[m.sourcePostId] = [];
-    bySource[m.sourcePostId].push(m);
-  }
-
-  // 同一 Source に複数ある場合、最新以外を削除
-  for (const [sourceId, entries] of Object.entries(bySource)) {
-    if (entries.length <= 1) continue;
-    // ファイル名順でソート（新しい順）
-    entries.sort((a, b) => b.filename.localeCompare(a.filename));
-    for (let i = 1; i < entries.length; i++) {
-      const filepath = path.join(SCROLLS_DIR, entries[i].filename);
-      try {
-        if (fs.existsSync(filepath)) {
-          fs.unlinkSync(filepath);
-          deleted.push(entries[i].filename);
-          console.log(`[Molt Agora] 重複スクロールを削除: ${entries[i].filename} (Source: ${sourceId})`);
-        }
-      } catch {}
-    }
-  }
-
-  // Question テキストが完全一致するものも重複削除
-  const byQuestion = {};
-  const currentMeta = loadRecentScrollMeta(12);
-  for (const m of currentMeta) {
-    const q = m.question.trim();
-    if (!q) continue;
-    if (!byQuestion[q]) byQuestion[q] = [];
-    byQuestion[q].push(m);
-  }
-  for (const [q, entries] of Object.entries(byQuestion)) {
-    if (entries.length <= 1) continue;
-    entries.sort((a, b) => b.filename.localeCompare(a.filename));
-    for (let i = 1; i < entries.length; i++) {
-      const filepath = path.join(SCROLLS_DIR, entries[i].filename);
-      try {
-        if (fs.existsSync(filepath)) {
-          fs.unlinkSync(filepath);
-          deleted.push(entries[i].filename);
-          console.log(`[Molt Agora] 重複スクロールを削除（同一Question）: ${entries[i].filename}`);
-        }
-      } catch {}
-    }
-  }
-
-  if (deleted.length > 0) {
-    console.log(`[Molt Agora] 重複削除完了: ${deleted.length}件のスクロールを削除しました。`);
-  }
-  return deleted;
-}
-
 module.exports = {
   SCROLLS_DIR,
   WISDOM_SCROLL_PROMPT,
@@ -336,5 +281,4 @@ module.exports = {
   loadRecentScrollMeta,
   isPostAlreadyScrolled,
   isSimilarTopicRecent,
-  deduplicateExistingScrolls,
 };
